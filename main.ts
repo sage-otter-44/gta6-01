@@ -16,7 +16,8 @@
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
@@ -77,8 +78,13 @@ function checkScreenshots(dir) {
 }
 
 function buildInto(target) {
-  rmSync(target, { recursive: true, force: true });
+  // Empty the target WITHOUT removing the target directory itself: the
+  // grader mounts /output as a writable directory on a read-only file
+  // system, and removing the mount point itself fails with EACCES.
   mkdirSync(target, { recursive: true });
+  for (const name of readdirSync(target)) {
+    rmSync(join(target, name), { recursive: true, force: true });
+  }
   const gameDir = join(here, 'game');
   const shotsDir = join(here, 'screenshots');
   const counted = countGameFiles(gameDir, '');
@@ -95,12 +101,23 @@ function buildInto(target) {
 function main() {
   const { shots, counted } = buildInto(out);
   // Prove the second run writes the same bytes: build again to a scratch
-  // directory and compare the dossier byte for byte.
-  const scratch = join(dirname(out), `.${basename(out)}-check`);
+  // directory and compare the dossier byte for byte. The scratch lives in
+  // the OS temp dir, not beside the output: the grader runs with a read-only
+  // file system outside /output and /tmp, so a scratch next to /output
+  // (/.output-check) fails with EROFS and the whole run exits non-zero.
+  const scratch = join(tmpdir(), `.solmar-check-${process.pid}`);
   buildInto(scratch);
   const first = readFileSync(join(out, 'dossier.json'));
   const second = readFileSync(join(scratch, 'dossier.json'));
-  rmSync(scratch, { recursive: true, force: true });
+  // Best-effort cleanup: the scratch holds copies of read-only source files,
+  // and removing them can fail when their parent dirs are not writable.
+  // The dossier is already written and compared, so a failed cleanup must
+  // not fail the run.
+  try {
+    rmSync(scratch, { recursive: true, force: true });
+  } catch {
+    /* scratch lives in /tmp; leaving it behind is harmless */
+  }
   if (!first.equals(second)) fail('the two runs wrote different dossiers');
   const text = JSON.parse(first.toString('utf8')).text ?? '';
   console.log(
