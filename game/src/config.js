@@ -1,113 +1,178 @@
-// Solmar Bay: every tuning number for the city, the cars, the people, the police
-// and the story lives here, so the rest of the game reads like a description.
-export const WORLD = {
-  width: 2560,
-  height: 1920,
-  roadWidth: 72,
-  // Vertical streets (x) and horizontal streets (y): the grid the city is built on.
-  streetsX: [200, 520, 840, 1160, 1480, 1800, 2120, 2440],
-  streetsY: [160, 400, 640, 880, 1120, 1360, 1600, 1760],
-  // South of this line the beach starts; the water begins a little further down.
-  beachY: 1824,
-  waterY: 1880,
-};
+// Solmar Bay: every tuning number, colour and map constant in one place.
+// The city is a fixed 2560x1920 world; the renderer shows a 1280x720 window of it.
+
+export const WORLD = { width: 2560, height: 1920 };
+export const VIEW = { width: 1280, height: 720 };
+export const STEP = 1 / 60;
+
+/** Street centrelines. Avenues run north-south, streets east-west, each 96 wide. */
+export const AVENUES = [320, 800, 1280, 1760, 2240];
+export const STREETS = [300, 700, 1100, 1500];
+export const ROAD_W = 96;
+/** The bay: water starts here and runs to the south edge; sand just above it. */
+export const WATER_Y = 1760;
+export const SAND_Y = 1680;
+/** The port district (east edge, containers and docks). */
+export const PORT = { x: 2240, y: 300, w: 320, h: 400 };
 
 export const PLAYER = {
   radius: 13,
-  walkSpeed: 175,
-  runSpeed: 265,
+  walkSpeed: 265,
+  runSpeed: 330,
   health: 100,
-  // Seconds a police car must stay touching an on-foot player to bust them.
-  bustTime: 1.2,
+  regenDelay: 5,
+  regenRate: 4,
+  shootRange: 330,
+  shootDamage: 34,
+  shootCooldown: 0.28,
+  punchDamage: 20,
+  punchRange: 46,
 };
 
 export const CAR = {
-  width: 46,
-  length: 78,
-  accel: 300,
-  brake: 520,
-  maxSpeed: 430,
-  reverseMax: 140,
-  turnRate: 2.6,
-  trafficSpeed: 120,
-  policeSpeed: 235,
+  length: 54,
+  width: 26,
+  accel: 420,
+  brake: 700,
+  reverseAccel: 260,
+  maxSpeed: 520,
+  maxReverse: 160,
+  steer: 2.6,
+  grip: 6.5,
+  health: 100,
+  enterRange: 64,
+};
+
+export const TRAFFIC = {
+  count: 14,
+  cruise: 150,
+  maxSpeed: 190,
+  colors: ['#c0392b', '#2980b9', '#f39c12', '#7f8c8d', '#8e44ad', '#16a085', '#dfe6e9'],
 };
 
 export const PED = {
-  radius: 9,
+  count: 22,
   walkSpeed: 55,
-  fleeSpeed: 130,
+  fleeSpeed: 150,
+  radius: 9,
 };
 
-export const BULLET = {
-  speed: 760,
-  life: 0.9,
-  damage: 34,
+export const POLICE = {
+  maxActive: 4,
+  cruise: 300,
+  chaseSpeed: 480,
+  ramDamage: 14,
+  bustRange: 42,
+  bustTime: 1.2,
+  spawnRange: 700,
+  despawnRange: 1100,
+};
+
+export const GANG = {
+  health: 100,
+  shootRange: 300,
+  shootDamage: 7,
+  shootCooldown: 0.9,
+  accuracy: 0.55,
 };
 
 export const WANTED = {
-  maxStars: 5,
-  // Seconds of quiet (no crime, no cop nearby) before one star fades.
-  decaySeconds: 20,
-  // How many police cars are out for each star.
-  copsPerStar: 1,
-  stealCarStars: 1,
-  hitPedStars: 1,
-  shootStars: 1,
-  killPedStars: 2,
+  max: 5,
+  decaySeconds: 15,
+  steal: 1,
+  hitPed: 1,
+  shoot: 1,
+  kill: 1,
 };
 
-export const DAY_LENGTH = 240; // seconds for one full day/night cycle
-
-export const SAVE_KEY = 'solmar-bay-save-v1';
-
-// The story: four jobs from Mara Voss, the fixer who runs the bay. Each job is a
-// list of steps; a step is done when the player reaches its marker (or, for the
-// steal step, gets into any car). Positions sit on street centrelines.
 export const MISSIONS = [
   {
-    id: 1,
-    name: 'First Wheels',
-    briefing: 'Mara needs wheels. Steal any car, then bring it to her garage.',
-    reward: 400,
-    steps: [
-      { kind: 'steal', text: 'Steal a car  (walk up to one and press E)' },
-      { kind: 'goto', x: 1480, y: 1120, label: "Mara's Garage", text: 'Drive to Mara\u2019s Garage' },
-    ],
-  },
-  {
-    id: 2,
     name: 'The Drop',
-    briefing: 'A package is waiting on Harbor Row. Pick it up and run it to the docks.',
-    reward: 800,
-    steps: [
-      { kind: 'goto', x: 520, y: 640, label: 'Package', text: 'Pick up the package on Harbor Row' },
-      { kind: 'goto', x: 2120, y: 400, label: 'The Docks', text: 'Deliver the package to the docks' },
+    pay: 800,
+    intro: 'Mara Voss is back in Solmar Bay. Pick up the package on the pier.',
+    stages: [
+      { type: 'goto', x: 1280, y: 1700, r: 60, label: 'Reach the pier' },
+      { type: 'interact', x: 1280, y: 1700, r: 56, label: 'Grab the package (E)' },
+      { type: 'goto', x: 400, y: 200, r: 70, label: 'Deliver to the safehouse' },
     ],
   },
   {
-    id: 3,
     name: 'Heat Run',
-    briefing: 'The cops are already on you. Reach the safehouse, then shake the heat.',
-    reward: 1200,
-    startWanted: 2,
-    steps: [
-      { kind: 'goto', x: 840, y: 1600, label: 'Safehouse', text: 'Reach the safehouse with the cops on you' },
-      { kind: 'loseheat', text: 'Lose the heat  (stay out of sight until the stars fade)' },
+    pay: 1000,
+    intro: 'The drop was a setup. Cops are on you — lose them, then reach the hideout.',
+    stages: [
+      { type: 'lose', label: 'Lose the cops (wanted 0)' },
+      { type: 'goto', x: 300, y: 1400, r: 70, label: 'Reach the hideout' },
     ],
   },
   {
-    id: 4,
-    name: 'Bay Heist',
-    briefing: 'Three stashes, one night. Grab them all, then vanish into the hideout.',
-    reward: 2600,
-    steps: [
-      { kind: 'collect', x: 200, y: 160, label: 'Stash 1 of 3', text: 'Grab the stash at North Gate' },
-      { kind: 'collect', x: 2440, y: 1760, label: 'Stash 2 of 3', text: 'Grab the stash at the beachfront' },
-      { kind: 'collect', x: 1160, y: 880, label: 'Stash 3 of 3', text: 'Grab the stash at Central Plaza' },
-      { kind: 'goto', x: 1800, y: 1360, label: 'Hideout', text: 'Reach the hideout' },
+    name: 'Dockside Debt',
+    pay: 1400,
+    intro: 'Three debtors owe the crew. Collect from all three — the port guards will object.',
+    stages: [
+      { type: 'interact', x: 2340, y: 420, r: 56, label: 'Collect at the port (E)' },
+      { type: 'interact', x: 800, y: 1100, r: 56, label: 'Collect at the market (E)' },
+      { type: 'interact', x: 1760, y: 1620, r: 56, label: 'Collect at the beach (E)' },
+    ],
+  },
+  {
+    name: 'Solmar Heist',
+    pay: 1800,
+    intro: 'One last job: steal the vault car from the port and bring it to the garage.',
+    stages: [
+      { type: 'goto', x: 2380, y: 520, r: 60, label: 'Reach the vault car' },
+      { type: 'steal', x: 2380, y: 520, r: 56, label: 'Steal the vault car (E)' },
+      { type: 'deliver', x: 2100, y: 1600, r: 80, label: 'Deliver to the garage' },
     ],
   },
 ];
 
-export const STORY_TOTAL = MISSIONS.reduce((sum, mission) => sum + mission.reward, 0);
+export const TOTAL_PAY = MISSIONS.reduce((sum, m) => sum + m.pay, 0);
+
+/** Landmarks the renderer and the minimap both use. */
+export const PLACES = {
+  safehouse: { x: 400, y: 200, label: 'SAFEHOUSE' },
+  hideout: { x: 300, y: 1400, label: 'HIDEOUT' },
+  pier: { x: 1280, y: 1700, label: 'PIER' },
+  garage: { x: 2100, y: 1600, label: 'GARAGE' },
+  port: { x: 2380, y: 520, label: 'PORT' },
+};
+
+export const PALETTE = {
+  water: '#16324a',
+  waterDeep: '#0f2537',
+  sand: '#c9a86a',
+  grass: '#2e5d34',
+  park: '#35703d',
+  road: '#23272e',
+  roadEdge: '#3a4048',
+  lane: '#d8c25a',
+  sidewalk: '#4a4f57',
+  building: ['#5d4a6e', '#6e4a4a', '#4a5d6e', '#5d6e4a', '#715f43', '#4a4a5d'],
+  roof: '#2f3540',
+  windowLit: '#f2c94c',
+  windowDark: '#1c2430',
+  container: ['#b3402e', '#2e7fb3', '#c98a2e', '#3e8e5a'],
+  player: '#f2c94c',
+  playerJacket: '#e5534b',
+  police: '#1c2733',
+  policeLight: '#e5534b',
+  policeLight2: '#4fc3f7',
+  ped: ['#e8e8e8', '#9bb7d4', '#d4a09b', '#a9d49b'],
+  gang: '#8e2f2f',
+  car: '#c0392b',
+  cash: '#7be07b',
+  text: '#eef1f5',
+  muted: '#9aa3b0',
+  banner: '#14181f',
+  star: '#f2c94c',
+  health: '#e5534b',
+  healthBg: '#2a2f38',
+  minimapBg: 'rgba(12, 16, 22, 0.85)',
+  night: 'rgba(8, 12, 32, 0.45)',
+  dusk: 'rgba(64, 32, 8, 0.22)',
+};
+
+export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+export const SAVE_KEY = 'solmar-bay.save.v1';
+export const BEST_KEY = 'solmar-bay.best.v1';
