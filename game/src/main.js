@@ -1,27 +1,38 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The
-// game moves between six screens: title, play, paused, busted, wasted and story complete.
+// Boot and the one loop: input is read every frame, the world advances in fixed
+// 1/60 s steps (several in a slow frame, none in a fast one), and the renderer
+// paints what is there. The game moves between five screens: title, play,
+// paused, busted and wasted. Progress saves to localStorage as you play.
 //
-// ?seed=N fixes the city's random pattern. ?shot=start|drive|action|end (with &seed=N) stages
-// that scene instead of running the loop, paints it twice and sets window.__shotReady.
-import { SAVE_KEY, STEP } from './config.js';
-import { createRandom } from './random.js';
+// ?seed=N fixes the city's random pattern. ?shot=start|drive|action|end (with
+// &seed=N) stages that scene instead of running the loop, paints it twice and
+// sets window.__shotReady for a screenshot.
+import { SAVE_KEY } from './config.js';
+import { makeRandom } from './random.js';
 import {
-  EVENT_BUSTED, EVENT_CASH, EVENT_COMPLETE, EVENT_HIT, EVENT_MISSION, EVENT_SHOT,
-  EVENT_WASTED, createWorld,
+  createWorld,
+  EVENT_BUSTED,
+  EVENT_ENTER_CAR,
+  EVENT_HIT,
+  EVENT_MISSION,
+  EVENT_PICKUP,
+  EVENT_SHOT,
+  EVENT_WASTED,
 } from './world.js';
-import {
-  ACTION_CONFIRM, ACTION_ENTER, ACTION_MELEE, ACTION_MUTE, ACTION_PAUSE, createInput,
-} from './input.js';
+import { ACTION_CONFIRM, ACTION_ENTER_CAR, ACTION_PAUSE, createInput } from './input.js';
 import { createAudio } from './audio.js';
 import {
-  SCREEN_BUSTED, SCREEN_COMPLETE, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE,
-  SCREEN_WASTED, createRenderer,
+  createRenderer,
+  SCREEN_BUSTED,
+  SCREEN_PAUSED,
+  SCREEN_PLAY,
+  SCREEN_TITLE,
+  SCREEN_WASTED,
 } from './render.js';
 import { stageShot } from './shots.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
+const STEP = 1 / 60;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -30,7 +41,7 @@ const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() 
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
+const world = createWorld(seed);
 const renderer = createRenderer(canvas);
 const audio = createAudio();
 
@@ -39,26 +50,42 @@ function readSave() {
     const raw = window.localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const save = JSON.parse(raw);
-    if (typeof save.cash !== 'number' || typeof save.missionIndex !== 'number') return null;
+    if (typeof save !== 'object' || save === null) return null;
     return save;
   } catch {
     return null;
   }
 }
+
 function writeSave() {
   try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(world.saveData()));
+    const state = world.state;
+    const p = state.player;
+    window.localStorage.setItem(SAVE_KEY, JSON.stringify({
+      cash: state.cash,
+      missionIndex: state.missionIndex,
+      stepIndex: state.stepIndex,
+      x: p.x, y: p.y, angle: p.angle,
+      time: state.time,
+    }));
   } catch {
-    // Storage can be off (private windows): the save then lasts this visit only.
+    // Storage can be off (private windows): progress then lasts this visit only.
+  }
+}
+
+function clearSave() {
+  try {
+    window.localStorage.removeItem(SAVE_KEY);
+  } catch {
+    // Nothing to clear.
   }
 }
 
 function runShot(name) {
   const scene = stageShot(name, world);
-  renderer.snapTo(scene.snap.x, scene.snap.y);
   let painted = 0;
   function paint() {
-    renderer.draw(world.state, scene.screen, { hasSave: false, muted: audio.isMuted() });
+    renderer.draw(world.state, scene.screen, scene, world.state.player.angle);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -69,165 +96,180 @@ function runShot(name) {
 function runGame() {
   const input = createInput(canvas);
   let screen = SCREEN_TITLE;
-  let hasSave = readSave() !== null;
+  let hintSeconds = 0;
+  let saveTimer = 0;
   let accumulator = 0;
+  let frameActions = 0;
+  let saveExists = readSave() !== null;
   let last = performance.now();
-  // True from the moment a click starts or resumes the game until that mouse button is let
-  // go: the starting click must not fire a shot (and raise the wanted level) on its own.
-  let suppressShootUntilRelease = false;
+  let aim = { x: world.state.player.x + 100, y: world.state.player.y };
 
   // Screen readers (and anyone watching the page's text) hear the screen changes.
   function announce(message) {
     status.textContent = message;
   }
 
-  function startGame(fresh) {
-    if (fresh) {
-      world.reset();
-    } else {
-      const save = readSave();
-      if (save) world.loadSave(save);
-      else world.reset();
-    }
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    audio.unlock();
-    suppressShootUntilRelease = true;
-    announce('Playing. Rook owes Eddie Voss $5,000.');
-  }
-
-  function endGame(next) {
-    screen = next;
-    writeSave();
-    if (next === SCREEN_BUSTED) {
-      audio.busted();
-      announce('Busted. The cops caught Rook.');
-    } else if (next === SCREEN_WASTED) {
-      announce('Wasted. Rook went down.');
-    } else if (next === SCREEN_COMPLETE) {
-      audio.jingle();
-      announce('Debt paid. Cinder Bay is yours.');
-    }
-  }
-
-  function buildWorldInput() {
-    const move = input.move();
-    const mouse = input.mouse();
-    const aim = renderer.screenToWorld(mouse.x, mouse.y);
-    const car = world.state.player.carId >= 0;
+  function extras() {
+    const mission = world.currentMission();
+    const step = world.currentStep();
     return {
-      mx: move.x,
-      my: move.y,
-      accel: input.accel(),
-      brake: input.brake(),
-      steer: input.steer(),
-      aimX: aim.x,
-      aimY: aim.y,
-      // Shooting is decided in step(), after screen transitions: the click that starts the
-      // game (or resumes it) must not also fire the weapon on the very same frame.
-      shoot: false,
-      enter: false,
-      melee: false,
+      marker: world.missionMarker(),
+      missionName: mission ? mission.name : '',
+      missionText: step ? step.text : '',
+      hintSeconds,
+      saveExists,
     };
   }
 
-  function handleActions(worldInput) {
-    const actions = input.takeActions();
-    if (actions & ACTION_MUTE) {
-      const muted = audio.toggleMute();
-      announce(muted ? 'Sound off.' : 'Sound on.');
+  function startGame(fresh) {
+    if (fresh) {
+      world.reset();
+      clearSave();
+      saveExists = false;
+    } else {
+      const save = readSave();
+      if (save) {
+        world.reset();
+        world.loadSave(save);
+      } else {
+        world.reset();
+      }
     }
-    if (actions & ACTION_ENTER) worldInput.enter = true;
-    if (actions & ACTION_MELEE) worldInput.melee = true;
-    if (actions & ACTION_CONFIRM) {
-      audio.unlock();
-      if (screen === SCREEN_TITLE) {
-        const key = input.takeConfirmKey();
-        startGame(key === 'Space' || !hasSave);
-      } else if (screen === SCREEN_BUSTED || screen === SCREEN_WASTED || screen === SCREEN_COMPLETE) {
-        startGame(true);
-      } else if (screen === SCREEN_PAUSED) {
+    hintSeconds = 12;
+    saveTimer = 0;
+    accumulator = 0;
+    screen = SCREEN_PLAY;
+    audio.unlock();
+    audio.click();
+    announce('Playing. Follow the yellow marker.');
+  }
+
+  function handleEvents(events) {
+    if (events & EVENT_SHOT) audio.shot();
+    if (events & EVENT_PICKUP) audio.pickup();
+    if (events & EVENT_MISSION) {
+      audio.missionDone();
+      writeSave();
+    }
+    if (events & EVENT_HIT) audio.crash();
+    if (events & EVENT_ENTER_CAR) audio.click();
+    if (events & EVENT_BUSTED) {
+      audio.busted();
+      screen = SCREEN_BUSTED;
+      announce('Busted. Press Enter to get back out there.');
+    }
+    if (events & EVENT_WASTED) {
+      audio.busted();
+      screen = SCREEN_WASTED;
+      announce('Wasted. Press Enter to get back out there.');
+    }
+  }
+
+  function handleActions() {
+    const actions = input.takeActions();
+    frameActions = actions;
+    audio.setMuted(input.isMuted());
+    if (screen === SCREEN_TITLE) {
+      if (actions & ACTION_CONFIRM) startGame(true);
+    } else if (screen === SCREEN_PLAY) {
+      if (actions & ACTION_PAUSE) {
+        screen = SCREEN_PAUSED;
+        audio.engine(0);
+        audio.siren(false);
+        announce('Paused.');
+      }
+    } else if (screen === SCREEN_PAUSED) {
+      if (actions & (ACTION_PAUSE | ACTION_CONFIRM)) {
         screen = SCREEN_PLAY;
-        suppressShootUntilRelease = true;
         announce('Playing.');
       }
-    } else if (actions & ACTION_PAUSE) {
-      if (screen === SCREEN_PLAY) {
-        screen = SCREEN_PAUSED;
-        announce('Paused.');
-      } else if (screen === SCREEN_PAUSED) {
+    } else if (screen === SCREEN_BUSTED || screen === SCREEN_WASTED) {
+      if (actions & ACTION_CONFIRM) {
+        world.respawn();
         screen = SCREEN_PLAY;
-        announce('Playing.');
+        announce('Playing. Follow the yellow marker.');
       }
     }
   }
 
-  function step() {
-    const worldInput = buildWorldInput();
-    handleActions(worldInput);
-    if (screen === SCREEN_TITLE) {
-      // The title screen's world sims behind the panel; the confirm press above starts the game.
-      world.step(STEP, {}, true);
-      return;
+  // Continue a saved game with C, from the title screen only.
+  window.addEventListener('keydown', (event) => {
+    if (event.code === 'KeyC' && !event.repeat && screen === SCREEN_TITLE && readSave()) {
+      startGame(false);
     }
+  });
+
+  function stepWorld() {
+    const move = input.move();
     const mouse = input.mouse();
-    if (suppressShootUntilRelease && !mouse.down) suppressShootUntilRelease = false;
-    worldInput.shoot = mouse.down && world.state.player.carId < 0 && !suppressShootUntilRelease;
-    const events = world.step(STEP, worldInput, false);
-    if (events & EVENT_SHOT) audio.shot();
-    if (events & EVENT_HIT) audio.thud();
-    if (events & EVENT_CASH) audio.coin();
-    if (events & EVENT_MISSION) {
-      audio.jingle();
-      writeSave();
-    }
-    if (events & EVENT_BUSTED) endGame(SCREEN_BUSTED);
-    else if (events & EVENT_WASTED) endGame(SCREEN_WASTED);
-    else if (events & EVENT_COMPLETE) endGame(SCREEN_COMPLETE);
-    const car = world.state.player.carId >= 0
-      ? world.state.cars.find((c) => c.id === world.state.player.carId)
-      : null;
-    audio.update(STEP, car ? Math.abs(car.speed) / 540 : 0, world.state.wanted.stars);
+    const point = renderer.worldPoint(world.state, mouse.x, mouse.y);
+    aim = point;
+    const state = world.state;
+    const enterPressed = (frameActions & ACTION_ENTER_CAR) !== 0;
+    frameActions &= ~ACTION_ENTER_CAR;
+    const events = world.step(STEP, {
+      mx: move.x,
+      my: move.y,
+      run: move.run,
+      enterPressed,
+      shootPressed: mouse.down && state.fireTimer <= 0,
+      shootHeld: false,
+      aimX: point.x,
+      aimY: point.y,
+    });
+    handleEvents(events);
   }
 
   function frame(now) {
     requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
+    const dt = Math.min((now - last) / 1000, MAX_FRAME);
+    accumulator += dt;
     last = now;
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
+    handleActions();
+    if (screen === SCREEN_TITLE) {
+      while (accumulator >= STEP) {
+        world.step(STEP, { mx: 0, my: 0, run: false, enterPressed: false, shootPressed: false, shootHeld: false, aimX: 0, aimY: 0 }, true);
         accumulator -= STEP;
       }
-    } else {
-      // Paused or over: keep the world still, but still paint it (and the panel).
-      accumulator = 0;
-      const actions = input.takeActions();
-      if (actions & ACTION_CONFIRM) {
-        audio.unlock();
-        if (screen === SCREEN_BUSTED || screen === SCREEN_WASTED || screen === SCREEN_COMPLETE) startGame(true);
-        else if (screen === SCREEN_PAUSED) {
-          screen = SCREEN_PLAY;
-          suppressShootUntilRelease = true;
-          announce('Playing.');
-        }
-      } else if (actions & ACTION_PAUSE && screen === SCREEN_PAUSED) {
-        screen = SCREEN_PLAY;
-        announce('Playing.');
+    } else if (screen === SCREEN_PLAY) {
+      while (accumulator >= STEP) {
+        stepWorld();
+        accumulator -= STEP;
+        if (screen !== SCREEN_PLAY) break;
       }
+      if (hintSeconds > 0) hintSeconds = Math.max(0, hintSeconds - dt);
+      saveTimer += dt;
+      if (saveTimer > 10) {
+        saveTimer = 0;
+        writeSave();
+        saveExists = true;
+      }
+      const state = world.state;
+      audio.engine(state.player.onFoot ? 0 : Math.abs(state.player.car.speed) / 430);
+      audio.siren(state.wanted > 0);
+    } else {
+      accumulator = 0;
+      audio.engine(0);
+      audio.siren(false);
     }
-    renderer.draw(world.state, screen, { hasSave, muted: audio.isMuted() });
+    const aimAngle = Math.atan2(aim.y - world.state.player.y, aim.x - world.state.player.x);
+    renderer.draw(world.state, screen, extras(), aimAngle);
   }
 
   // Leaving the tab pauses a running game rather than letting the city move unseen.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
+      audio.engine(0);
+      audio.siren(false);
       announce('Paused.');
     }
   });
 
-  announce('Cinder Bay. Press Enter to start.');
+  announce('Solmar Bay. Press Enter to start, or C to continue a saved game.');
+  // A handle for automated play-testing (and nothing else): the world, the
+  // screen and the save, so a headless browser can drive the real game.
+  window.__solmar = { world, getScreen: () => screen, save: writeSave, load: readSave };
   requestAnimationFrame(frame);
 }
 

@@ -1,106 +1,97 @@
-// Keyboard and pointer input. Held keys give movement and driving; one-shot presses (enter
-// a car, shoot, melee, confirm, pause, mute) are queued as bit flags and taken once by the
-// loop, so a press between two frames is never lost and never counted twice. The mouse position
-// is kept in screen pixels; the loop converts it to world coordinates with the camera.
-
+// Keyboard and mouse input for Solmar Bay. Held keys steer and drive; one-shot
+// presses (confirm, pause, enter/exit car) are queued as flags and taken once by
+// the loop, so a press between two frames is never lost and never counted twice.
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
-export const ACTION_ENTER = 4;
-export const ACTION_MELEE = 8;
-export const ACTION_MUTE = 16;
+export const ACTION_ENTER_CAR = 4;
 
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
+const MOVE = {
+  ArrowUp: 'up', KeyW: 'up',
+  ArrowDown: 'down', KeyS: 'down',
+  ArrowLeft: 'left', KeyA: 'left',
+  ArrowRight: 'right', KeyD: 'right',
+};
 const CONFIRM = new Set(['Space', 'Enter']);
 const PAUSE = new Set(['KeyP', 'Escape']);
-const ENTER = new Set(['KeyE']);
-const MELEE = new Set(['KeyF']);
+const ENTER_CAR = new Set(['KeyE']);
+const RUN = new Set(['ShiftLeft', 'ShiftRight']);
 const MUTE = new Set(['KeyM']);
 
-export function createInput(target) {
-  const keys = { up: false, down: false, left: false, right: false };
+export function createInput(canvas) {
+  const held = { up: false, down: false, left: false, right: false, run: false };
+  const mouse = { x: 0, y: 0, down: false };
   let actions = 0;
-  let mouseX = 0;
-  let mouseY = 0;
-  let mouseDown = false;
-  let lastConfirmKey = null;
+  let muted = false;
 
-  function press(event) {
-    if (UP.has(event.code)) keys.up = true;
-    else if (DOWN.has(event.code)) keys.down = true;
-    else if (LEFT.has(event.code)) keys.left = true;
-    else if (RIGHT.has(event.code)) keys.right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) {
-        actions |= ACTION_CONFIRM;
-        lastConfirmKey = event.code;
-      }
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else if (ENTER.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_ENTER;
-    } else if (MELEE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_MELEE;
-    } else if (MUTE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_MUTE;
-    } else return;
+  function onKeyDown(event) {
+    const move = MOVE[event.code];
+    if (move) {
+      held[move] = true;
+      event.preventDefault();
+      return;
+    }
+    if (RUN.has(event.code)) { held.run = true; return; }
+    if (event.repeat) return;
+    if (CONFIRM.has(event.code)) actions |= ACTION_CONFIRM;
+    else if (PAUSE.has(event.code)) actions |= ACTION_PAUSE;
+    else if (ENTER_CAR.has(event.code)) actions |= ACTION_ENTER_CAR;
+    else if (MUTE.has(event.code)) muted = !muted;
+    else return;
     event.preventDefault();
   }
-  function release(event) {
-    if (UP.has(event.code)) keys.up = false;
-    else if (DOWN.has(event.code)) keys.down = false;
-    else if (LEFT.has(event.code)) keys.left = false;
-    else if (RIGHT.has(event.code)) keys.right = false;
+
+  function onKeyUp(event) {
+    const move = MOVE[event.code];
+    if (move) held[move] = false;
+    if (RUN.has(event.code)) held.run = false;
   }
-  window.addEventListener('keydown', press);
-  window.addEventListener('keyup', release);
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
+
+  function onMouseMove(event) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = event.clientX - rect.left;
+    mouse.y = event.clientY - rect.top;
+  }
+
+  function onMouseDown(event) {
+    onMouseMove(event);
+    mouse.down = true;
+  }
+
+  function onMouseUp() {
+    mouse.down = false;
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  // A key released while the tab is hidden never sends keyup: let go on blur.
   window.addEventListener('blur', () => {
-    keys.up = false;
-    keys.down = false;
-    keys.left = false;
-    keys.right = false;
-    mouseDown = false;
+    held.up = held.down = held.left = held.right = held.run = false;
+    mouse.down = false;
   });
-  target.addEventListener('pointermove', (event) => {
-    mouseX = event.clientX;
-    mouseY = event.clientY;
-  });
-  target.addEventListener('pointerdown', (event) => {
-    mouseX = event.clientX;
-    mouseY = event.clientY;
-    if (event.button === 0) mouseDown = true;
-    actions |= ACTION_CONFIRM;
-  });
-  window.addEventListener('pointerup', (event) => {
-    if (event.button === 0) mouseDown = false;
-  });
+  canvas.addEventListener('mousemove', onMouseMove);
+  canvas.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mouseup', onMouseUp);
 
   return {
-    /** Movement vector, each component -1, 0 or 1. */
+    /** Movement vector, each component in [-1, 1]. */
     move() {
-      return { x: (keys.right ? 1 : 0) - (keys.left ? 1 : 0), y: (keys.down ? 1 : 0) - (keys.up ? 1 : 0) };
+      return {
+        x: (held.right ? 1 : 0) - (held.left ? 1 : 0),
+        y: (held.down ? 1 : 0) - (held.up ? 1 : 0),
+        run: held.run,
+      };
     },
-    /** Steering while driving: -1 left, 1 right. */
-    steer() {
-      return (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    mouse() {
+      return { x: mouse.x, y: mouse.y, down: mouse.down };
     },
-    accel() { return keys.up; },
-    brake() { return keys.down; },
-    mouse() { return { x: mouseX, y: mouseY, down: mouseDown }; },
+    isMuted() {
+      return muted;
+    },
     /** The one-shot presses since the last call, as ACTION_* flags. */
     takeActions() {
       const taken = actions;
       actions = 0;
       return taken;
-    },
-    /** 'Enter' or 'Space' for the most recent confirm press (title: Enter continues, Space restarts). */
-    takeConfirmKey() {
-      const key = lastConfirmKey;
-      lastConfirmKey = null;
-      return key;
     },
   };
 }
