@@ -1,248 +1,201 @@
-// Node tests for Solmar Bay's game logic. The world module has no DOM in it,
-// so these import it directly and drive it with scripted input.
-// Run: node --test test.mjs
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { MISSIONS, WORLD } from './game/src/config.js';
-import { clamp } from './game/src/random.js';
-import { createWorld, EVENT_BUSTED } from './game/src/world.js';
-import { stageShot } from './game/src/shots.js';
+// Node tests for Solmar Bay's rules: the world is pure logic with no DOM in
+// it, so the whole simulation runs here. Run with `node test.mjs`.
+import { MISSIONS, PLAYER, TOTAL_PAY } from './game/src/config.js';
+import { createRandom } from './game/src/random.js';
+import { createWorld, EVENT_ENTER, EVENT_OVER } from './game/src/world.js';
+
+let pass = 0;
+let fail = 0;
+
+function check(name, ok) {
+  if (ok) { pass += 1; console.log(`✓ ${name}`); }
+  else { fail += 1; console.log(`✗ FAIL: ${name}`); }
+}
+
+function fresh(seed) {
+  return createWorld(createRandom(seed ?? 7));
+}
 
 const STEP = 1 / 60;
+const idle = { x: 0, y: 0, shoot: false };
 
-function idle() {
-  return { mx: 0, my: 0, run: false, enterPressed: false, shootPressed: false, shootHeld: false, aimX: 0, aimY: 0 };
+// The seeded RNG repeats itself.
+{
+  const a = createRandom(42);
+  const b = createRandom(42);
+  const seqA = [a(), a(), a()];
+  const seqB = [b(), b(), b()];
+  check('seeded random repeats', seqA[0] === seqB[0] && seqA[1] === seqB[1] && seqA[2] === seqB[2] && seqA[0] !== seqA[1]);
 }
 
-function drive(seconds, world, inputFor) {
-  const steps = Math.round(seconds / STEP);
-  let events = 0;
-  for (let i = 0; i < steps; i += 1) events |= world.step(STEP, inputFor ? inputFor(world) : idle());
-  return events;
+// The city is built and the first mission is armed.
+{
+  const w = fresh();
+  check('city has buildings', w.state.buildings.length > 10);
+  check('traffic fills the roads', w.state.cars.length === 14);
+  check('pedestrians walk the city', w.state.peds.length === 22);
+  check('first mission is The Drop', w.state.mission === 0 && w.state.objective === 'Reach the pier');
+  check('four missions pay $5,000 in all', TOTAL_PAY === 5000);
 }
 
-test('clamp holds both bounds', () => {
-  assert.equal(clamp(5, 0, 10), 5);
-  assert.equal(clamp(-3, 0, 10), 0);
-  assert.equal(clamp(99, 0, 10), 10);
-  assert.equal(clamp(0, 0, 10), 0);
-  assert.equal(clamp(10, 0, 10), 10);
-});
+// Walking moves Mara and the city walls stop her.
+{
+  const w = fresh();
+  const { x, y } = w.state.player;
+  w.step(STEP, { x: 1, y: 0, shoot: false }, 0);
+  check('walking east moves Mara east', w.state.player.x > x);
+  check('walking keeps Mara on land', w.state.player.y < 1760);
+  void y;
+}
 
-test('the city keeps buildings off the roads and markers on them', () => {
-  const world = createWorld(7);
-  const { buildings } = world.state;
-  assert.ok(buildings.length > 40, `expected many buildings, got ${buildings.length}`);
-  const half = WORLD.roadWidth / 2;
-  for (const b of buildings) {
-    for (const sx of WORLD.streetsX) {
-      assert.ok(b.x + b.w <= sx - half || b.x >= sx + half, `building overlaps vertical street ${sx}`);
-    }
-    for (const sy of WORLD.streetsY) {
-      assert.ok(b.y + b.h <= sy - half || b.y >= sy + half, `building overlaps horizontal street ${sy}`);
-    }
+// The pier stage completes when Mara walks onto it (teleport-free: drive the
+// world forward with a direct steer toward the objective).
+{
+  const w = fresh();
+  const stage = MISSIONS[0].stages[0];
+  w.state.player.x = stage.x - 30;
+  w.state.player.y = stage.y;
+  w.step(STEP, { x: 1, y: 0, shoot: false }, 0);
+  check('reaching the pier advances the mission', w.state.stage === 1);
+}
+
+// Entering a parked car works; stealing a traffic car raises the heat.
+{
+  const w = fresh();
+  const car = w.state.cars[0];
+  car.driver = 'parked';
+  car.x = w.state.player.x + 20;
+  car.y = w.state.player.y;
+  const events = w.step(STEP, idle, 1);
+  check('E near a car gets Mara in', w.state.player.inCar === car);
+  check('entering a car reports the event', (events & EVENT_ENTER) !== 0);
+  check('stealing a car raises wanted to 1', w.state.wanted === 1);
+}
+
+// Driving accelerates, steers and stops at the water.
+{
+  const w = fresh();
+  const car = w.state.cars[1];
+  car.driver = 'parked';
+  car.x = 1280; car.y = 700; car.angle = 0; car.speed = 0;
+  w.state.player.x = car.x + 20; w.state.player.y = car.y;
+  w.step(STEP, idle, 1);
+  for (let i = 0; i < 120; i += 1) w.step(STEP, { x: 0, y: -1, shoot: false }, 0);
+  check('driving builds speed', car.speed > 200);
+  check('the car stays out of the bay', car.y < 1760);
+}
+
+// Shooting spends a cooldown, raises the heat, and can drop a gang member.
+{
+  const w2 = fresh();
+  // Jump straight to mission 3: the guards spawn with it.
+  w2.loadProgress(2, 0);
+  check('gang members spawn for Dockside Debt', w2.state.gang.length === 4);
+  const guard = w2.state.gang[0];
+  w2.state.player.x = guard.x - 100;
+  w2.state.player.y = guard.y;
+  w2.state.player.angle = 0;
+  w2.state.player.shootCd = 0;
+  const before = guard.health;
+  w2.step(STEP, { x: 0, y: 0, shoot: true }, 0);
+  check('a shot in the cone hurts the guard', guard.health < before);
+  check('shooting raises wanted', w2.state.wanted >= 1);
+  check('a shot is counted', w2.state.stats.shots === 1);
+}
+
+// Wanted decays once the heat is off and no unit is near.
+{
+  const w = fresh();
+  w.state.wanted = 2;
+  w.state.wantedTimer = 0.01;
+  for (let i = 0; i < 5; i += 1) w.step(STEP, idle, 0);
+  check('wanted decays with no police near', w.state.wanted === 1);
+}
+
+// Police spawn while wanted and give up once it clears. Mara drives away
+// from the chase: on foot and idle she would rightly get busted instead.
+{
+  const w = fresh();
+  const car = w.state.cars[1];
+  car.driver = 'parked';
+  car.x = 1280; car.y = 700; car.angle = 0; car.speed = 0;
+  w.state.player.x = car.x + 20; w.state.player.y = car.y;
+  w.step(STEP, idle, 1);
+  w.state.wanted = 3;
+  for (let i = 0; i < 400; i += 1) w.step(STEP, { x: 0, y: -1, shoot: false }, 0);
+  check('police spawn while wanted', w.state.police.length > 0);
+  check('the chase does not wreck the car at once', w.state.player.inCar && w.state.player.inCar.health > 0);
+  w.state.wanted = 0;
+  // Foot off the gas: a car still ploughing through pedestrians would
+  // rightly keep the heat on. Parked, the units leave within seconds.
+  for (let i = 0; i < 60 * 60; i += 1) w.step(STEP, idle, 0);
+  check('police leave once wanted clears', w.state.police.length === 0);
+}
+
+// Busted: a unit catches Mara on foot and stands over her.
+{
+  const w = fresh();
+  w.state.wanted = 1;
+  const unit = w.spawnPoliceCar();
+  w.state.police.push(unit);
+  unit.x = w.state.player.x + 10;
+  unit.y = w.state.player.y;
+  unit.speed = 0;
+  let over = 0;
+  for (let i = 0; i < 120; i += 1) {
+    over = w.step(STEP, idle, 0);
+    if (over & EVENT_OVER) break;
   }
-  for (const mission of MISSIONS) {
-    for (const step of mission.steps) {
-      if (step.x === undefined) continue;
-      assert.ok(world.onRoad(step.x, step.y), `mission ${mission.id} marker (${step.x}, ${step.y}) is not on a road`);
-    }
-  }
-});
+  check('standing next to a unit gets Mara busted', w.state.over === 'busted');
+}
 
-test('walking moves the player and the world bounds hold', () => {
-  const world = createWorld(7);
-  const p = world.state.player;
-  const startX = p.x;
-  drive(1, world, () => ({ ...idle(), mx: 1 }));
-  assert.ok(p.x > startX + 100, `walked only to ${p.x}`);
-  assert.ok(p.x < WORLD.width && p.y < WORLD.height);
-  // Walk into the west wall for a long time: the player stays inside.
-  p.x = 30;
-  p.y = 880;
-  drive(3, world, () => ({ ...idle(), mx: -1 }));
-  assert.ok(p.x >= 13, `escaped the west wall: ${p.x}`);
-  // The water blocks the south edge.
-  p.x = 520;
-  p.y = WORLD.waterY - 30;
-  drive(2, world, () => ({ ...idle(), my: 1 }));
-  assert.ok(p.y < WORLD.waterY - 6, `walked into the water: ${p.y}`);
-});
+// The heist ends the story: vault car home, $5,000 banked.
+{
+  const w = fresh();
+  w.stageScene('end');
+  check('the heist banks all $5,000', w.state.cash === 5000);
+  check('the story ends complete', w.state.over === 'complete');
+}
 
-test('a building stops the player on foot', () => {
-  const world = createWorld(7);
-  const b = world.state.buildings[0];
-  const p = world.state.player;
-  p.x = b.x - 20;
-  p.y = b.y + b.h / 2;
-  drive(1, world, () => ({ ...idle(), mx: 1 }));
-  assert.ok(p.x + 13 <= b.x + 1, `walked through a building to ${p.x}`);
-});
+// The staged scenes are deterministic: same seed, same frame inputs.
+{
+  const a = fresh();
+  const b = fresh();
+  a.stageScene('drive');
+  b.stageScene('drive');
+  check('drive scene stages identically',
+    !!a.state.player.inCar && !!b.state.player.inCar
+    && a.state.cars[0].x === b.state.cars[0].x
+    && a.state.cash === b.state.cash
+    && a.state.wanted === b.state.wanted);
+}
 
-test('mission 1: stealing a car raises the heat and starts the job', () => {
-  const world = createWorld(7);
-  const car = world.state.cars.find((c) => c.kind === 'parked');
-  const p = world.state.player;
-  p.x = car.x - 40;
-  p.y = car.y;
-  world.step(STEP, { ...idle(), enterPressed: true });
-  // Walk the last stretch if the first press missed.
-  for (let i = 0; i < 120 && p.onFoot; i += 1) {
-    const dx = car.x - p.x;
-    const dy = car.y - p.y;
-    const len = Math.hypot(dx, dy) || 1;
-    world.step(STEP, { ...idle(), mx: dx / len, my: dy / len, enterPressed: Math.hypot(dx, dy) < 50 });
-  }
-  assert.equal(p.onFoot, false, 'player did not get into the car');
-  assert.equal(world.state.wanted, 1, 'stealing a car should add one star');
-  assert.equal(world.state.stepIndex, 1, 'mission 1 step should advance after the steal');
-  assert.equal(world.currentStep().kind, 'goto');
-});
+// Cash pickups pay out on touch.
+{
+  const w = fresh();
+  const pk = w.state.pickups[0];
+  w.state.player.x = pk.x;
+  w.state.player.y = pk.y;
+  w.step(STEP, idle, 0);
+  check('a cash pickup pays $50', w.state.cash === 50 && pk.active === false);
+}
 
-test('mission 1 completes at the garage and mission 2 starts', () => {
-  const world = createWorld(7);
-  const car = world.state.cars.find((c) => c.kind === 'parked');
-  const p = world.state.player;
-  p.x = car.x - 40;
-  p.y = car.y;
-  for (let i = 0; i < 120 && p.onFoot; i += 1) {
-    const dx = car.x - p.x;
-    const dy = car.y - p.y;
-    const len = Math.hypot(dx, dy) || 1;
-    world.step(STEP, { ...idle(), mx: dx / len, my: dy / len, enterPressed: Math.hypot(dx, dy) < 50 });
-  }
-  assert.equal(p.onFoot, false);
-  car.x = 1480;
-  car.y = 1120;
-  p.x = 1480;
-  p.y = 1120;
-  world.step(STEP, idle());
-  assert.equal(world.state.missionIndex, 1, 'mission 2 should start at the garage');
-  assert.equal(world.state.cash, 400, 'mission 1 should pay $400');
-  assert.equal(world.state.stepIndex, 0);
-});
+// Health regenerates after a quiet spell.
+{
+  const w = fresh();
+  w.state.player.health = 60;
+  w.state.player.hurtTimer = 0;
+  for (let i = 0; i < 120; i += 1) w.step(STEP, idle, 0);
+  check('health regenerates when quiet', w.state.player.health > 60);
+}
 
-test('traffic stays on the roads', () => {
-  const world = createWorld(11);
-  drive(30, world);
-  for (const car of world.state.cars) {
-    if (car.kind !== 'traffic') continue;
-    const nearX = WORLD.streetsX.some((sx) => Math.abs(car.x - sx) <= 40);
-    const nearY = WORLD.streetsY.some((sy) => Math.abs(car.y - sy) <= 40);
-    assert.ok(nearX || nearY, `traffic car off-road at (${car.x}, ${car.y})`);
-  }
-});
+// The player cannot walk into the bay.
+{
+  const w = fresh();
+  w.state.player.y = 1750;
+  for (let i = 0; i < 60; i += 1) w.step(STEP, { x: 0, y: 1, shoot: false }, 0);
+  check('Mara stays out of the water', w.state.player.y < 1760);
+}
 
-test('the wanted level decays once the cops are far away', () => {
-  const world = createWorld(7);
-  world.state.wanted = 2;
-  world.state.timeSinceCrime = 999;
-  // The player outran the cops and is waiting in the park, off the roads,
-  // so passing traffic cannot run them down mid-test.
-  world.state.player.x = 1000;
-  world.state.player.y = 760;
-  // Keep the streets clear of police.
-  drive(45, world, () => {
-    world.state.cars = world.state.cars.filter((c) => c.kind !== 'police');
-    return idle();
-  });
-  assert.equal(world.state.wanted, 0, `wanted should decay to 0, got ${world.state.wanted}`);
-});
-
-test('police spawn up to the wanted level', () => {
-  const world = createWorld(7);
-  // Get in a car first: on foot the cops would bust the player mid-test.
-  const car = world.state.cars.find((c) => c.kind === 'parked');
-  const p = world.state.player;
-  p.x = car.x;
-  p.y = car.y;
-  world.step(STEP, { ...idle(), enterPressed: true });
-  assert.equal(p.onFoot, false);
-  world.state.wanted = 3;
-  world.state.timeSinceCrime = 0;
-  drive(6, world);
-  const cops = world.state.cars.filter((c) => c.kind === 'police');
-  assert.equal(cops.length, 3, `expected 3 cops, got ${cops.length}`);
-});
-
-test('shooting a pedestrian kills them and raises the heat', () => {
-  const world = createWorld(7);
-  const p = world.state.player;
-  const ped = world.state.peds[0];
-  ped.x = p.x + 90;
-  ped.y = p.y;
-  ped.state = 'walk';
-  for (let shot = 0; shot < 4 && ped.state !== 'dead'; shot += 1) {
-    world.step(STEP, { ...idle(), shootPressed: true, aimX: ped.x, aimY: ped.y });
-    drive(0.3, world);
-  }
-  assert.equal(ped.state, 'dead', 'the pedestrian should be dead after three hits');
-  assert.ok(world.state.wanted > 0, 'shooting should raise the wanted level');
-  assert.ok(world.state.bullets.length >= 0);
-});
-
-test('busted respawns the player at the police station', () => {
-  const world = createWorld(7);
-  world.state.wanted = 3;
-  world.state.cash = 500;
-  const cop = world.state.cars.find((c) => c.kind === 'police') ?? null;
-  assert.ok(cop === null, 'no cops before they spawn');
-  drive(6, world);
-  // Park a cop on top of the player until the bust lands.
-  let events = 0;
-  for (let i = 0; i < 300 && !world.state.gameOver; i += 1) {
-    for (const c of world.state.cars) {
-      if (c.kind === 'police') { c.x = world.state.player.x; c.y = world.state.player.y; }
-    }
-    events |= world.step(STEP, idle());
-  }
-  assert.ok(events & EVENT_BUSTED || world.state.gameOver === 'busted', 'the player should be busted');
-  world.respawn();
-  assert.equal(world.state.gameOver, null);
-  assert.equal(world.state.player.x, 2120);
-  assert.equal(world.state.player.y, 1600);
-  assert.equal(world.state.wanted, 0);
-  assert.equal(world.state.cash, 300, 'bail should cost $200');
-  assert.equal(world.state.cars.filter((c) => c.kind === 'police').length, 0);
-});
-
-test('save and load round-trips cash, mission and position', () => {
-  const world = createWorld(7);
-  world.state.cash = 1234;
-  world.state.missionIndex = 1;
-  world.state.stepIndex = 1;
-  world.state.player.x = 900;
-  world.state.player.y = 400;
-  const other = createWorld(9);
-  other.loadSave({ cash: 1234, missionIndex: 1, stepIndex: 1, x: 900, y: 400, angle: 0, time: 0.3 });
-  assert.equal(other.state.cash, 1234);
-  assert.equal(other.state.missionIndex, 1);
-  assert.equal(other.state.stepIndex, 1);
-  assert.equal(other.state.player.x, 900);
-  assert.equal(other.state.player.y, 400);
-});
-
-test('the drive shot stages a real chase-ready scene', () => {
-  const world = createWorld(1);
-  const scene = stageShot('drive', world);
-  assert.equal(scene.screen, 'play');
-  assert.equal(world.state.player.onFoot, false, 'the drive shot should show the player in a car');
-  assert.ok(world.missionMarker(), 'the drive shot should have a mission marker');
-});
-
-test('the end shot stages the finished story at night', () => {
-  const world = createWorld(1);
-  const scene = stageShot('end', world);
-  assert.equal(scene.screen, 'play');
-  assert.equal(world.state.storyDone, true);
-  assert.equal(world.state.cash, 5000);
-  assert.ok(world.state.time > 0.8, 'the end shot should be at night');
-});
-
-test('the action shot stages a wanted chase', () => {
-  const world = createWorld(1);
-  const scene = stageShot('action', world);
-  assert.equal(scene.screen, 'play');
-  assert.ok(world.state.wanted >= 2, `action shot should be wanted, got ${world.state.wanted}`);
-  assert.ok(world.state.cars.some((c) => c.kind === 'police'), 'action shot should have police');
-});
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);

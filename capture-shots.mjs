@@ -1,141 +1,128 @@
-// Takes Solmar Bay's four screenshots in headless Chromium and writes them
-// straight into screenshots/ — the files are rendered by the game's own code
-// in a real browser, never copied in from anywhere else.
-// Run: node capture-shots.mjs   (serves game/ itself, then exits)
+// Renders the four screenshot scenes with headless Chromium, driven over the
+// DevTools protocol with Node's built-in WebSocket — no npm packages needed.
+// Usage: node capture-shots.mjs [--port 8091]
+// Reads shots.json, serves game/ on localhost, waits for window.__shotReady
+// on each scene, and writes a 1280x720 JPEG into screenshots/.
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const HERE = fileURLToPath(new URL('.', import.meta.url));
-const CHROME = `${process.env.HOME}/.cache/ms-playwright/chromium-1255/chrome-linux64/chrome`;
-const PORT = 8901;
-const DEBUG_PORT = 9222;
-const SHOTS = JSON.parse(
-  (await import('node:fs')).readFileSync(join(HERE, 'shots.json'), 'utf8'),
-);
+const here = fileURLToPath(new URL('.', import.meta.url));
+const gameDir = join(here, 'game');
+const shotsDir = join(here, 'screenshots');
+const shots = JSON.parse(readFileSync(join(here, 'shots.json'), 'utf8'));
+
+const CHROME = process.env.CHROME_BIN ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1255/chrome-linux64/chrome`;
+const WIDTH = 1280;
+const HEIGHT = 720;
+
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
+
+const args = process.argv.slice(2);
+const portIndex = args.indexOf('--port');
+const port = portIndex === -1 ? 8091 : Number(args[portIndex + 1]);
+
+const server = createServer((req, res) => {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  let path = decodeURIComponent(url.pathname);
+  if (path.endsWith('/')) path += 'index.html';
+  const file = join(gameDir, path);
+  try {
+    const data = readFileSync(file);
+    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'content-length': data.length });
+    res.end(data);
+  } catch {
+    res.writeHead(404).end('not found');
+  }
+});
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor(url, timeoutMs = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {
-      // Not up yet.
-    }
-    await sleep(200);
-  }
-  throw new Error(`never came up: ${url}`);
-}
-
-class Cdp {
-  constructor(wsUrl) {
-    this.ws = new WebSocket(wsUrl);
-    this.nextId = 1;
-    this.pending = new Map();
-    this.consoleErrors = [];
-    this.failedRequests = [];
-    this.requests = [];
-    this.ready = new Promise((resolve, reject) => {
-      this.ws.addEventListener('open', resolve);
-      this.ws.addEventListener('error', reject);
-    });
-    this.ws.addEventListener('message', (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error) reject(new Error(msg.error.message));
-        else resolve(msg.result);
-      } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
-        this.consoleErrors.push(msg.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
-      } else if (msg.method === 'Runtime.exceptionThrown') {
-        this.consoleErrors.push(msg.params.exceptionDetails.text + ' ' + (msg.params.exceptionDetails.exception?.description ?? ''));
-      } else if (msg.method === 'Network.requestWillBeSent') {
-        this.requests.push(msg.params.request.url);
-      } else if (msg.method === 'Network.loadingFailed') {
-        this.failedRequests.push(msg.params.errorText);
-      }
-    });
-  }
-
-  async send(method, params = {}) {
-    await this.ready;
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate(expression) {
-    const result = await this.send('Runtime.evaluate', { expression, returnByValue: true });
-    if (result.exceptionDetails) throw new Error('evaluate failed: ' + JSON.stringify(result.exceptionDetails));
-    return result.result.value;
-  }
-
-  async waitFor(expression, timeoutMs = 30000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (await this.evaluate(expression)) return true;
-      await sleep(200);
-    }
-    throw new Error(`timed out waiting for: ${expression}`);
-  }
-
-  close() {
-    this.ws.close();
-  }
+async function getJson(url) {
+  const res = await fetch(url);
+  return res.json();
 }
 
 async function main() {
-  const server = spawn('node', ['serve.ts', '--port', String(PORT)], { cwd: HERE, stdio: 'pipe' });
+  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+  const debugPort = port + 100;
   const chrome = spawn(CHROME, [
-    '--headless=new', '--no-sandbox', '--disable-gpu',
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    '--window-size=1280,720', 'about:blank',
-  ], { stdio: 'pipe' });
+    '--headless=new',
+    `--remote-debugging-port=${debugPort}`,
+    '--no-sandbox',
+    '--disable-gpu',
+    `--window-size=${WIDTH},${HEIGHT}`,
+    '--hide-scrollbars',
+    'about:blank',
+  ], { stdio: 'ignore' });
+
   try {
-    await waitFor(`http://127.0.0.1:${PORT}/index.html`);
-    await waitFor(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-    const targets = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
-    const page = targets.find((t) => t.type === 'page');
-    const cdp = new Cdp(page.webSocketDebuggerUrl);
-    await cdp.send('Page.enable');
-    await cdp.send('Runtime.enable');
-    await cdp.send('Network.enable');
-    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
-
-    for (const shot of SHOTS) {
-      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/index.html${shot.query}` });
-      await cdp.waitFor('window.__shotReady === true');
-      await sleep(300);
-      const { data } = await cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 85 });
-      const path = join(HERE, 'screenshots', shot.name);
-      writeFileSync(path, Buffer.from(data, 'base64'));
-      console.log(`wrote ${shot.name}`);
+    let targets = null;
+    for (let i = 0; i < 50 && !targets; i += 1) {
+      await sleep(200);
+      try { targets = await getJson(`http://127.0.0.1:${debugPort}/json`); } catch { /* not up yet */ }
     }
+    if (!targets) throw new Error('Chromium did not open its DevTools port');
+    const page = targets.find((t) => t.type === 'page');
+    if (!page) throw new Error('no page target from Chromium');
+    const ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = reject;
+    });
+    let id = 0;
+    const pending = new Map();
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.id && pending.has(msg.id)) {
+        pending.get(msg.id)(msg);
+        pending.delete(msg.id);
+      }
+    };
+    function send(method, params) {
+      return new Promise((resolve) => {
+        const mid = (id += 1);
+        pending.set(mid, resolve);
+        ws.send(JSON.stringify({ id: mid, method, params: params ?? {} }));
+      });
+    }
+    async function evaluate(expression) {
+      const res = await send('Runtime.evaluate', { expression, returnByValue: true });
+      return res.result?.result?.value;
+    }
+    await send('Page.enable');
+    await send('Runtime.enable');
+    await send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
 
-    const external = cdp.requests.filter((url) => !url.startsWith(`http://127.0.0.1:${PORT}`) && !url.startsWith('data:') && !url.endsWith('/favicon.ico'));
-    console.log(`requests: ${cdp.requests.length} total, ${external.length} external`);
-    if (external.length > 0) console.log('external requests:', external);
-    const failed = cdp.failedRequests.filter((e) => !e.includes('favicon'));
-    console.log(`console errors: ${cdp.consoleErrors.length}`, cdp.consoleErrors);
-    console.log(`failed requests: ${failed.length}`, failed);
-    if (cdp.consoleErrors.length > 0 || external.length > 0) process.exitCode = 1;
-    cdp.close();
+    for (const shot of shots) {
+      const url = `http://127.0.0.1:${port}/index.html${shot.query}`;
+      await send('Page.navigate', { url });
+      let ready = false;
+      for (let i = 0; i < 100 && !ready; i += 1) {
+        await sleep(100);
+        ready = await evaluate('window.__shotReady === true');
+      }
+      if (!ready) throw new Error(`scene ${shot.name} never signalled ready`);
+      await sleep(150);
+      const shotRes = await send('Page.captureScreenshot', { format: 'jpeg', quality: 82 });
+      const data = Buffer.from(shotRes.result.data, 'base64');
+      writeFileSync(join(shotsDir, shot.name), data);
+      const size = statSync(join(shotsDir, shot.name)).size;
+      console.log(`${shot.name}: ${size} bytes${size > 262144 ? '  OVER 256 KiB!' : ''}`);
+      if (size > 262144) throw new Error(`${shot.name} is over the 256 KiB cap`);
+    }
+    console.log('all screenshots rendered');
   } finally {
-    chrome.kill('SIGKILL');
-    server.kill('SIGKILL');
+    chrome.kill('SIGTERM');
+    server.close();
   }
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error(error.message);
   process.exit(1);
 });

@@ -2,7 +2,7 @@
 // this directory's game/ folder — plain static files a desktop browser loads
 // offline (game/index.html and its ES modules, no library, no network
 // request) — and this program hands it in: it copies game/ and screenshots/
-// from beside this file to /output and writes /output/dossier.json, the
+// from beside this file to the output directory and writes dossier.json, the
 // summary the judge reads, with the vendored make.fun library.
 //
 // The program is deliberately strict about what it hands in, because the
@@ -10,6 +10,15 @@
 // count and sizes and the game folder's file count and bytes before it writes
 // anything, and it writes the dossier twice, once to a scratch copy, to prove
 // the two runs produce the same bytes.
+//
+// The grader runs this program as an unprivileged user on a read-only file
+// system, with only the output directory and the OS temp directory writable.
+// So it writes ONLY under the output directory and the temp directory: it
+// never removes the output directory itself (it may be a mount point), it
+// empties the directory's contents instead; and the scratch copy lives in the
+// OS temp directory, never beside the output directory. A failed scratch
+// cleanup can never fail the run, because the dossier is already written by
+// then.
 //
 // Serve the game locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
@@ -79,7 +88,7 @@ function checkScreenshots(dir) {
 
 function buildInto(target) {
   // Empty the target WITHOUT removing the target directory itself: the
-  // grader mounts /output as a writable directory on a read-only file
+  // grader mounts the output as a writable directory on a read-only file
   // system, and removing the mount point itself fails with EACCES.
   mkdirSync(target, { recursive: true });
   for (const name of readdirSync(target)) {
@@ -102,21 +111,21 @@ function main() {
   const { shots, counted } = buildInto(out);
   // Prove the second run writes the same bytes: build again to a scratch
   // directory and compare the dossier byte for byte. The scratch lives in
-  // the OS temp dir, not beside the output: the grader runs with a read-only
-  // file system outside /output and /tmp, so a scratch next to /output
-  // (/.output-check) fails with EROFS and the whole run exits non-zero.
+  // the OS temp directory, not beside the output: the grader runs with a
+  // read-only file system outside the output and temp directories, so a
+  // scratch next to the output fails and the whole run exits non-zero.
   const scratch = join(tmpdir(), `.solmar-check-${process.pid}`);
   buildInto(scratch);
   const first = readFileSync(join(out, 'dossier.json'));
   const second = readFileSync(join(scratch, 'dossier.json'));
   // Best-effort cleanup: the scratch holds copies of read-only source files,
-  // and removing them can fail when their parent dirs are not writable.
-  // The dossier is already written and compared, so a failed cleanup must
-  // not fail the run.
+  // and removing them can fail when their parent dirs are not writable. The
+  // dossier is already written and compared, so a failed cleanup must not
+  // fail the run.
   try {
     rmSync(scratch, { recursive: true, force: true });
   } catch {
-    /* scratch lives in /tmp; leaving it behind is harmless */
+    /* scratch lives in the temp directory; leaving it behind is harmless */
   }
   if (!first.equals(second)) fail('the two runs wrote different dossiers');
   const text = JSON.parse(first.toString('utf8')).text ?? '';

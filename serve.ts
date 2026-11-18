@@ -1,9 +1,8 @@
-// A tiny static server for game/ (Node 22, standard library only), so Solmar
-// Bay can be played locally without a build step: `node serve.ts` serves
+// A tiny static server for game/ (Node 22, standard library only), so the
+// game can be played locally without a build step: `node serve.ts` serves
 // game/ on http://localhost:8080 (or --port <n>). It sends the MIME types a
 // browser game needs, refuses any path outside game/, and otherwise does
-// nothing clever: this is a development convenience, not a web server for the
-// internet.
+// nothing clever: a development convenience, not a web server for the net.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -12,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 const args = process.argv.slice(2);
 const portIndex = args.indexOf('--port');
-const wanted = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
+const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -35,10 +34,11 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-function serve(request, response) {
+createServer((request, response) => {
+  const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname;
   try {
-    pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
+    pathname = decodeURIComponent(url.pathname);
   } catch {
     response.writeHead(400).end('bad request');
     return;
@@ -64,8 +64,6 @@ function serve(request, response) {
     'cache-control': 'no-store',
   });
   createReadStream(file).pipe(response);
-}
-
-createServer(serve).listen(port, '127.0.0.1', () => {
-  console.log(`Solmar Bay is on http://localhost:${port}`);
+}).listen(port, '127.0.0.1', () => {
+  console.log(`game/ is on http://localhost:${port}`);
 });
