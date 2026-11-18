@@ -1,136 +1,113 @@
-// Every tuning number and colour in one place. Cinder Bay is a fixed 2560x1920 city:
-// 9 avenues and 7 streets on a 280 px grid, roads 108 px wide (ROAD_HALF 54). The renderer
-// shows a 1280x720 window of it through a camera that follows the player.
-
-export const CITY = { width: 2560, height: 1920 };
-export const AVENUES = [160, 440, 720, 1000, 1280, 1560, 1840, 2120, 2400];
-export const STREETS = [160, 440, 720, 1000, 1280, 1560, 1840];
-export const ROAD_HALF = 54;
-
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
-export const STEP = 1 / 60;
-
-/** Where the save (cash, mission, story done) is kept between visits (this browser only). */
-export const SAVE_KEY = 'cinder-bay.save.v1';
+// Solmar Bay: every tuning number for the city, the cars, the people, the police
+// and the story lives here, so the rest of the game reads like a description.
+export const WORLD = {
+  width: 2560,
+  height: 1920,
+  roadWidth: 72,
+  // Vertical streets (x) and horizontal streets (y): the grid the city is built on.
+  streetsX: [200, 520, 840, 1160, 1480, 1800, 2120, 2440],
+  streetsY: [160, 400, 640, 880, 1120, 1360, 1600, 1760],
+  // South of this line the beach starts; the water begins a little further down.
+  beachY: 1824,
+  waterY: 1880,
+};
 
 export const PLAYER = {
-  radius: 12,
-  walkSpeed: 235,
-  hp: 100,
-  /** Seconds a foot cop must stay touching the player to arrest them. */
-  arrestSeconds: 1.0,
+  radius: 13,
+  walkSpeed: 175,
+  runSpeed: 265,
+  health: 100,
+  // Seconds a police car must stay touching an on-foot player to bust them.
+  bustTime: 1.2,
 };
 
 export const CAR = {
-  length: 48,
-  width: 26,
-  accel: 430,
-  brake: 720,
-  maxSpeed: 540,
-  maxReverse: 170,
-  /** Radians per second of steering at full speed; scaled down when slow. */
-  turn: 2.7,
-  /** Damage taken on a hard crash, per 100 px/s of impact over the free speed. */
-  crashFree: 260,
+  width: 46,
+  length: 78,
+  accel: 300,
+  brake: 520,
+  maxSpeed: 430,
+  reverseMax: 140,
+  turnRate: 2.6,
+  trafficSpeed: 120,
+  policeSpeed: 235,
 };
 
-export const TRAFFIC_COUNT = 14;
-export const PED_COUNT = 24;
+export const PED = {
+  radius: 9,
+  walkSpeed: 55,
+  fleeSpeed: 130,
+};
+
+export const BULLET = {
+  speed: 760,
+  life: 0.9,
+  damage: 34,
+};
 
 export const WANTED = {
-  /** Lose one star this often while unseen and crime-free. */
-  decaySeconds: 6,
-  /** Seconds without a crime before decay may start. */
-  unseenSeconds: 8,
-  /** A cop within this range keeps the player "seen". */
-  seeRange: 480,
   maxStars: 5,
+  // Seconds of quiet (no crime, no cop nearby) before one star fades.
+  decaySeconds: 20,
+  // How many police cars are out for each star.
+  copsPerStar: 1,
+  stealCarStars: 1,
+  hitPedStars: 1,
+  shootStars: 1,
+  killPedStars: 2,
 };
 
-export const BULLET = { speed: 920, range: 640, damage: 1, fireInterval: 0.22 };
-export const MELEE = { range: 52, arc: 1.1, damage: 1, cooldown: 0.45 };
+export const DAY_LENGTH = 240; // seconds for one full day/night cycle
 
-export const COP = { speed: 205, count: 2 };
-export const POLICE_CAR = { maxSpeed: 560, accel: 470 };
+export const SAVE_KEY = 'solmar-bay-save-v1';
 
-/** Story missions, in order. Pay totals $5,000 — exactly Rook's debt to Eddie Voss. */
+// The story: four jobs from Mara Voss, the fixer who runs the bay. Each job is a
+// list of steps; a step is done when the player reaches its marker (or, for the
+// steal step, gets into any car). Positions sit on street centrelines.
 export const MISSIONS = [
   {
-    name: 'First Fare',
-    pay: 400,
-    blurb: 'Marla needs a driver. Pick up the fare on Harbor St, then drop them at the east docks.',
-    pickup: { x: 720, y: 720 },
-    dropoff: { x: 1840, y: 1280 },
+    id: 1,
+    name: 'First Wheels',
+    briefing: 'Mara needs wheels. Steal any car, then bring it to her garage.',
+    reward: 400,
+    steps: [
+      { kind: 'steal', text: 'Steal a car  (walk up to one and press E)' },
+      { kind: 'goto', x: 1480, y: 1120, label: "Mara's Garage", text: 'Drive to Mara\u2019s Garage' },
+    ],
   },
   {
-    name: 'Hot Wheels',
-    pay: 800,
-    blurb: 'A gold Vanta GT is sitting in the marina lot. Steal it and bring it to the warehouse garage.',
-    pickup: { x: 1980, y: 1700 },
-    dropoff: { x: 440, y: 460 },
+    id: 2,
+    name: 'The Drop',
+    briefing: 'A package is waiting on Harbor Row. Pick it up and run it to the docks.',
+    reward: 800,
+    steps: [
+      { kind: 'goto', x: 520, y: 640, label: 'Package', text: 'Pick up the package on Harbor Row' },
+      { kind: 'goto', x: 2120, y: 400, label: 'The Docks', text: 'Deliver the package to the docks' },
+    ],
   },
   {
-    name: 'Street Heat',
-    pay: 1200,
-    blurb: 'Voss keeps a package in the north warehouse. The guards will not hand it over nicely.',
-    pickup: { x: 300, y: 160 },
-    dropoff: { x: 300, y: 160 },
+    id: 3,
+    name: 'Heat Run',
+    briefing: 'The cops are already on you. Reach the safehouse, then shake the heat.',
+    reward: 1200,
+    startWanted: 2,
+    steps: [
+      { kind: 'goto', x: 840, y: 1600, label: 'Safehouse', text: 'Reach the safehouse with the cops on you' },
+      { kind: 'loseheat', text: 'Lose the heat  (stay out of sight until the stars fade)' },
+    ],
   },
   {
-    name: 'The Big Getaway',
-    pay: 2600,
-    blurb: 'Package in hand, every cop in Cinder Bay is coming. Get to Old Pier and do not stop.',
-    pickup: { x: 300, y: 160 },
-    dropoff: { x: 2470, y: 1560 },
+    id: 4,
+    name: 'Bay Heist',
+    briefing: 'Three stashes, one night. Grab them all, then vanish into the hideout.',
+    reward: 2600,
+    steps: [
+      { kind: 'collect', x: 200, y: 160, label: 'Stash 1 of 3', text: 'Grab the stash at North Gate' },
+      { kind: 'collect', x: 2440, y: 1760, label: 'Stash 2 of 3', text: 'Grab the stash at the beachfront' },
+      { kind: 'collect', x: 1160, y: 880, label: 'Stash 3 of 3', text: 'Grab the stash at Central Plaza' },
+      { kind: 'goto', x: 1800, y: 1360, label: 'Hideout', text: 'Reach the hideout' },
+    ],
   },
 ];
 
-/** Cash pickups scattered on sidewalks. */
-export const CASH_PICKUPS = [
-  { x: 1000, y: 214, amount: 50 },
-  { x: 1560, y: 1066, amount: 50 },
-  { x: 440, y: 1334, amount: 50 },
-  { x: 2120, y: 774, amount: 50 },
-  { x: 1280, y: 1614, amount: 50 },
-  { x: 720, y: 1894 - 120, amount: 50 },
-];
-
-export const DAY_LENGTH = 240;
-
-export const PALETTE = {
-  backdrop: '#0d1017',
-  water: '#1e4a6e',
-  waterDeep: '#153850',
-  ground: '#46545f',
-  block: '#3a4552',
-  park: '#2e7a4a',
-  parkDark: '#256b3e',
-  sidewalk: '#6a7280',
-  road: '#33383f',
-  roadLine: '#b09a55',
-  building: '#7d8ea6',
-  buildingRoof: '#5f6d80',
-  warehouse: '#9a865c',
-  warehouseRoof: '#77683f',
-  pier: '#a8824f',
-  player: '#ffd166',
-  playerCar: '#e8b93b',
-  vanta: '#d4af37',
-  police: '#e8e8e8',
-  policeDark: '#1d2733',
-  ped: '#9fb3c8',
-  guard: '#c94f4f',
-  bullet: '#ffe9a3',
-  muzzle: '#ffdf6b',
-  panel: '#1b212b',
-  text: '#eef1f5',
-  muted: '#93a0b4',
-  cash: '#7ddc8a',
-  danger: '#ff6b5e',
-  star: '#ffd166',
-  health: '#58d68d',
-  minimapRoad: '#7d8590',
-  minimapWater: '#1e4a6e',
-};
-
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+export const STORY_TOTAL = MISSIONS.reduce((sum, mission) => sum + mission.reward, 0);

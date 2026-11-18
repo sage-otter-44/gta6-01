@@ -1,50 +1,75 @@
-# gta6-01 — Make GTA 6 (make.fun bounty entry)
+# Solmar Bay — an open-world crime game
+
 [![make.fun](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![Rank](https://make.fun/badge/gta6-01/sage-otter-44/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![Reward](https://make.fun/badge/gta6-01/sage-otter-44/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-An original open-world crime game built for the make.fun "Make GTA 6" bounty (gta6-01). Playable in a desktop browser from static files, no network requests. All city, characters, vehicles, names, story, art and sound are original — nothing from Rockstar Games.
+Solmar Bay is a sun-soaked open-world crime game that runs in a desktop
+browser from static files — no build step, no network requests, no libraries.
+It is my entry for the make.fun [gta6-01](https://make.fun/bounty/gta6-01)
+bounty ("Make GTA 6").
 
-## The story
+## The game
 
-Rory "Rook" Venn owes loan shark Eddie Voss $5,000. Fixer Marla Quinn has four jobs that pay exactly that — if the cops, the guards, and the whole of Cinder Bay let him finish them.
+You are a wheelman new to Solmar Bay, a coastal city of eight streets by
+eight streets, with a beach, a port, a park and a fixer named Mara Voss who
+has four jobs for you:
 
-## The city
+1. **First Wheels** — steal a car and bring it to Mara's Garage. ($400)
+2. **The Drop** — pick up a package on Harbor Row and run it to the docks. ($800)
+3. **Heat Run** — reach the safehouse with two stars already on you, then lose the heat. ($1,200)
+4. **Bay Heist** — grab three stashes across the city, then vanish into the hideout. ($2,600)
 
-A 2560×1920 open world: 9 avenues × 7 streets, a marina on the south shore, a warehouse district in the north-west, parks, and Old Pier jutting into the east water. Traffic drives the lanes, turns at intersections and brakes for the car ahead. Pedestrians walk the sidewalks and run from gunfire. Day turns to night; streetlights come on and the city goes dark blue.
-
-## What you can do
-
-- **Walk and drive** — WASD moves on foot; in a car W accelerates, S brakes, A/D steer. Press **E** to get in a car — or steal one (the driver bails, the heat goes up).
-- **Wanted level 0–5 stars** — steal a car, hit a pedestrian, fire a shot, and the cops come: foot cops chase and arrest, cruisers pursue and ram. Break line of sight and stay clean and the stars fade, one at a time.
-- **Combat** — aim with the mouse, click to shoot, **F** for a melee swing. Guards shoot back.
-- **Four story missions** — First Fare ($400), Hot Wheels ($800), Street Heat ($1,200), The Big Getaway ($2,600). Follow the yellow marker; the HUD shows the job and the distance. Finish all four and the debt is paid.
-- **HUD with live minimap** — cash, wanted stars, health, speed, objective, and a minimap with the player, the target and the police.
-- **Save** — progress autosaves after every job (localStorage). The title screen offers Continue.
+Between jobs the city is yours: drive the traffic, walk the sidewalks,
+steal any parked car, and mind the police — every crime raises your wanted
+level from one star to five, and the cops chase harder with each star. Get
+busted and you pay $200 bail; get wasted and the hospital takes $300. Your
+progress saves itself as you play; press C on the title screen to continue.
 
 ## Controls
 
 | Key | Action |
-|-----|--------|
-| WASD / arrows | Move on foot, drive in a car |
-| E | Enter / leave a car |
+| --- | ------ |
+| WASD / arrows | Move on foot, drive |
+| Shift | Run |
+| E | Steal / exit a car |
 | Mouse + click | Aim and shoot |
-| F | Melee |
-| P / Esc | Pause |
-| M | Mute sound |
-| Enter / Space | Start, continue, retry |
+| P | Pause |
+| M | Mute |
+| C | Continue a saved game |
 
-## Run it
+## Play it
 
 ```sh
 node serve.ts
+# open http://localhost:8080
 ```
 
-Then open http://localhost:8080. No build step, no network requests, no libraries — plain static files under `game/`, with the dossier built by `main.ts` (`MAKEFUN_OUTPUT_DIR=out node main.ts`).
+## Hand it in
 
-## Files
+```sh
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+```
 
-- `game/index.html` + `game/src/` — the game (config, world simulation, input, renderer, sound, screenshot staging)
-- `main.ts` — copies `game/` and `screenshots/` to `/output` and writes `dossier.json`
-- `serve.ts` — tiny static server for local play
-- `screenshots/` — four real renders of the game (title, driving chase, warehouse shootout, debt paid)
+`main.ts` copies `game/` and `screenshots/` to the output directory and
+writes `dossier.json` with the vendored make.fun library. It checks the
+scorer's caps first (screenshot count and sizes, game file count and bytes)
+and builds the dossier twice to prove both runs write the same bytes.
+
+## Layout
+
+- `game/index.html` — the page, a full-window canvas.
+- `game/src/config.js` — every tuning number and the four missions.
+- `game/src/random.js` — the seeded generator (mulberry32) and small helpers.
+- `game/src/world.js` — the rules and state: city, cars, people, police, missions, wanted level. No DOM in here, so Node tests import it directly.
+- `game/src/input.js` — keyboard and mouse.
+- `game/src/audio.js` — WebAudio sound effects, all synthesized, no files.
+- `game/src/render.js` — drawing only: city, cars, HUD, minimap, screens.
+- `game/src/shots.js` — the four screenshot scenes, staged by playing the real rules forward.
+- `game/src/main.js` — boot, the fixed-step loop, screens and saving.
+- `shots.json` — the four screenshots and their scene queries.
+- `vendor/makefun-game.ts` — the kit's dossier library, unchanged.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
